@@ -109,6 +109,11 @@ namespace WebRtcVoice
                 // Register for the region feature reporting so we can add 'webrtc'
                 var sfm = scene.RequestModuleInterface<ISimulatorFeaturesModule>();
                 sfm?.AddFeature("VoiceServerType", OSD.FromString("webrtc"));
+                // [FIRE-36421] Firestorm 7.2.4+ OpenSim build reads SimulatorFeatures["stun-servers"]
+                // for its WebRTC ICE config. An EMPTY/absent value makes newer libwebrtc reject the
+                // peer connection ("Empty uri, SYNTAX_ERROR") and WebRTC voice never starts. Advertise
+                // at least one valid STUN so voice works; a reachable STUN also yields srflx candidates.
+                sfm?.AddFeature("stun-servers", OSD.FromString("stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302"));
             }
         }
 
