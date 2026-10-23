@@ -1,5 +1,45 @@
 # os-webrtc-janus
 
+## This branch: the hardened module for wolfvoice (version 1.2.0)
+
+**By Shadow Wolf and Lone Wolf, Wolf Territories Grid and IntelligentWolf Ltd.**
+
+Branch `chatsession-p2p-session-id-and-fast-fail` of
+[intelligentwolf/os-webrtc-janus](https://github.com/intelligentwolf/os-webrtc-janus) is
+the region module that the [wolfvoice](https://github.com/intelligentwolf/wolfvoice)
+spatial voice server is built and tested against. Compared with the archived upstream
+addon it adds:
+
+- **The text-IM fix**: `ChatSessionRequest` answers `start p2p voice` with the viewer's
+  own session id and fails `start conference` fast instead of after 30 s. (The same
+  fix is in upstream OpenSimulator as [opensim/opensim#69](https://github.com/opensim/opensim/pull/69).)
+- **Private voice calls and group voice**, with a signed ticket per avatar per room.
+- **A relay key and a credential key** (`RpcKeyFile`, `CredKeyFile`), re-read when they change.
+- **Voice off is enforced** at the region: estate and parcel voice flags, parcel bans and
+  access lists, and neighbour (child-agent) connections always get the estate room.
+- **Room rights re-checked on every connect** (group membership and voice power,
+  conference membership, the other party of a call).
+- **Its own TLS-verifying client for the voice server** (chain and host name are always
+  checked, whatever OpenSim's global `NoVerifyCertChain` says).
+- **A position feed**: once a second, while anyone is in voice, the region tells
+  wolfvoice where its avatars really are, so a modified viewer cannot listen in from
+  elsewhere (`PositionFeed = false` turns it off).
+- Optional Wolf Territories features that stay **off** unless configured: ad-hoc
+  conferences and Wolf Chat voice rooms need a conference service
+  (`ConferenceApiUrl` plus a sim secret); without one, "start conference" fails fast
+  with the viewer's own message, as before.
+
+It builds against OpenSimulator 0.9.3.0 (classic prebuild tree, .NET 8) as an
+addon-module, and against current OpenSimulator master in place of the in-tree copy.
+**Full install and configuration steps, with the log lines to expect, are in the
+[wolfvoice README](https://github.com/intelligentwolf/wolfvoice#2-build-the-region-module-into-opensim).**
+
+The Janus backend (`WebRtcJanusService`) is unchanged from upstream and still builds;
+it has not been re-tested against a Janus gateway on this branch.
+
+---
+
+
 > [!NOTE]
 > As of February 26, 2026, this code and functionality has been integrated
 > into [OpenSimulator](http://opensimulator.org)

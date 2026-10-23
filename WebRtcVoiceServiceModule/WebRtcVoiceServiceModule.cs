@@ -70,16 +70,16 @@ namespace WebRtcVoice
                 if (m_Enabled)
                 {
                     // Get the DLLs for the two voice services
-                    string spatialDllName = moduleConfig.GetString("SpatialVoiceService", string.Empty);
-                    string nonSpatialDllName = moduleConfig.GetString("NonSpatialVoiceService", string.Empty);
-                    if (string.IsNullOrEmpty(spatialDllName) && string.IsNullOrEmpty(nonSpatialDllName))
+                    string spatialDllName = moduleConfig.GetString("SpatialVoiceService", String.Empty);
+                    string nonSpatialDllName = moduleConfig.GetString("NonSpatialVoiceService", String.Empty);
+                    if (String.IsNullOrEmpty(spatialDllName) && String.IsNullOrEmpty(nonSpatialDllName))
                     {
                         m_log.ErrorFormat("{0} No SpatialVoiceService or NonSpatialVoiceService specified in configuration", LogHeader);
                         m_Enabled = false;
                     }
 
                     // Default non-spatial to spatial if not specified
-                    if (string.IsNullOrEmpty(nonSpatialDllName))
+                    if (String.IsNullOrEmpty(nonSpatialDllName))
                     {
                         m_log.DebugFormat("{0} nonSpatialDllName not specified. Defaulting to spatialDllName", LogHeader);
                         nonSpatialDllName = spatialDllName;
@@ -87,7 +87,7 @@ namespace WebRtcVoice
 
                     // Load the two voice services
                     m_log.DebugFormat("{0} Loading SpatialVoiceService from {1}", LogHeader, spatialDllName);
-                    m_spatialVoiceService = ServerUtils.LoadPlugin<IWebRtcVoiceService>(spatialDllName, [m_Config]);
+                    m_spatialVoiceService = ServerUtils.LoadPlugin<IWebRtcVoiceService>(spatialDllName, new object[] { m_Config });
                     if (m_spatialVoiceService is null)
                     {
                         m_log.ErrorFormat("{0} Could not load SpatialVoiceService from {1}", LogHeader, spatialDllName);
@@ -102,7 +102,7 @@ namespace WebRtcVoice
                     }
                     else
                     {
-                        m_nonSpatialVoiceService = ServerUtils.LoadPlugin<IWebRtcVoiceService>(nonSpatialDllName, [m_Config]);
+                        m_nonSpatialVoiceService = ServerUtils.LoadPlugin<IWebRtcVoiceService>(nonSpatialDllName, new object[] { m_Config });
                         if (m_nonSpatialVoiceService is null)
                         {
                             m_log.ErrorFormat("{0} Could not load NonSpatialVoiceService from {1}", LogHeader, nonSpatialDllName);
@@ -187,7 +187,7 @@ namespace WebRtcVoice
             IEnumerable<KeyValuePair<string, IVoiceViewerSession>> vSessions;
             if (VoiceViewerSession.TryGetViewerSessionByAgentId(pAgentID, out vSessions))
             {
-                foreach (KeyValuePair<string, IVoiceViewerSession> v in vSessions)
+                foreach(KeyValuePair<string, IVoiceViewerSession> v in vSessions)
                 {
                     m_log.DebugFormat("{0} Event_OnRemovePresence: removing viewer session {1}", LogHeader, v.Key);
                     VoiceViewerSession.RemoveViewerSession(v.Key);
@@ -203,19 +203,38 @@ namespace WebRtcVoice
         {
             OSDMap response = null;
             IVoiceViewerSession vSession = null;
-            if (pRequest.TryGetString("viewer_session", out string viewerSessionId))
+            // [Wolf 2026-10-09] A Wolf viewer MOVING its voice session here from another region
+            // (a crossing or teleport): the session was created by that region's process, so it
+            // is not in this one's registry. Register it here under the same id, so this region
+            // routes its later requests (ICE, logout) too, and let wolfvoice decide - it moves the
+            // session only if it belongs to pUserID, the agent this region issued the cap to.
+            bool wolfMove = pRequest.ContainsKey("wolf_move") && pRequest["wolf_move"].AsBoolean();
+            string movingId = null;
+            if (pRequest.ContainsKey("viewer_session"))
             {
                 // request has a viewer session. Use that to find the voice service
+                string viewerSessionId = pRequest["viewer_session"].AsString();
                 if (!VoiceViewerSession.TryGetViewerSession(viewerSessionId, out vSession))
                 {
-                    m_log.ErrorFormat("{0} ProvisionVoiceAccountRequest: viewer session {1} not found", LogHeader, viewerSessionId);
+                    if (wolfMove && !string.IsNullOrEmpty(viewerSessionId) && m_spatialVoiceService is not null)
+                    {
+                        vSession = m_spatialVoiceService.CreateViewerSession(pRequest, pUserID, pSceneID);
+                        VoiceViewerSession.AddViewerSession(vSession);
+                        VoiceViewerSession.UpdateViewerSessionId(vSession, viewerSessionId);
+                        movingId = viewerSessionId;
+                    }
+                    else
+                    {
+                        m_log.ErrorFormat("{0} ProvisionVoiceAccountRequest: viewer session {1} not found", LogHeader, viewerSessionId);
+                    }
                 }
-            }
+            }   
             else
             {
                 // the request does not have a viewer session. See if it's an initial request
-                if (pRequest.TryGetString("channel_type", out string channelType))
+                if (pRequest.ContainsKey("channel_type"))
                 {
+                    string channelType = pRequest["channel_type"].AsString();
                     if (channelType == "local")
                     {
                         // TODO: check if this userId is making a new session (case that user is reconnecting)
@@ -234,9 +253,20 @@ namespace WebRtcVoice
                     m_log.ErrorFormat("{0} ProvisionVoiceAccountRequest: no channel_type in request", LogHeader);
                 }
             }
-            if (vSession is not null)
+            try
             {
-                response = await vSession.VoiceService.ProvisionVoiceAccountRequest(vSession, pRequest, pUserID, pSceneID);
+                if (vSession is not null)
+                {
+                    response = await vSession.VoiceService.ProvisionVoiceAccountRequest(vSession, pRequest, pUserID, pSceneID);
+                }
+            }
+            finally
+            {
+                // [Wolf 2026-10-09] A move the voice server refused (or that threw): forget the entry made for it.
+                if (movingId is not null && (response is null || !response.ContainsKey("wolf_moved")))
+                {
+                    VoiceViewerSession.RemoveViewerSession(movingId);
+                }
             }
             return response;
         }
@@ -246,9 +276,10 @@ namespace WebRtcVoice
         {
             OSDMap response = null;
             IVoiceViewerSession vSession = null;
-            if (pRequest.TryGetString("viewer_session", out string viewerSessionId))
+            if (pRequest.ContainsKey("viewer_session"))
             {
                 // request has a viewer session. Use that to find the voice service
+                string viewerSessionId = pRequest["viewer_session"].AsString();
                 if (VoiceViewerSession.TryGetViewerSession(viewerSessionId, out vSession))
                 {
                     response = await vSession.VoiceService.VoiceSignalingRequest(vSession, pRequest, pUserID, pSceneID);
@@ -257,7 +288,7 @@ namespace WebRtcVoice
                 {
                     m_log.ErrorFormat("{0} VoiceSignalingRequest: viewer session {1} not found", LogHeader, viewerSessionId);
                 }
-            }
+            }   
             else
             {
                 m_log.ErrorFormat("{0} VoiceSignalingRequest: no viewer_session in request", LogHeader);

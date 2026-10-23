@@ -36,6 +36,10 @@ namespace WebRtcVoice
         private IConfigSource m_Config;
 
         string m_serverURI = "http://localhost:8080";
+        // [Wolf 2026-10-09] The key wolfvoice requires from the relay (security scan H5): read from
+        // [WebRtcVoice] RpcKeyFile, default /etc/opensim/voice_rpc_key. Empty = not sent.
+        // [HARDENING 2026-10-23] Re-read when the file changes (WolfVoiceKeyFile), and never logged.
+        WolfVoiceKeyFile m_rpcKey = new WolfVoiceKeyFile(string.Empty);
 
         public WebRtcVoiceServiceConnector(IConfigSource pConfig)
         {
@@ -48,6 +52,7 @@ namespace WebRtcVoice
                 if (m_Enabled)
                 {
                     m_serverURI = moduleConfig.GetString("WebRtcVoiceServerURI", string.Empty);
+                    m_rpcKey = new WolfVoiceKeyFile(moduleConfig.GetString("RpcKeyFile", "/etc/opensim/voice_rpc_key"));
                     if (string.IsNullOrWhiteSpace(m_serverURI))
                     {
                         m_log.ErrorFormat("{0} WebRtcVoiceServiceConnector enabled but no WebRtcVoiceServerURI specified", LogHeader);
@@ -89,6 +94,8 @@ namespace WebRtcVoice
                 { "userID", pUserID.ToString() },
                 { "scene", pSceneID.ToString() }
             };
+            string key = m_rpcKey.Value;
+            if (key.Length > 0) req["key"] = key;
             var resp = await JsonRpcRequest("provision_voice_account_request", m_serverURI, req);
 
             // Kludge to sync the viewer session number in our IVoiceViewerSession with the one from the WebRTC service.
@@ -118,85 +125,22 @@ namespace WebRtcVoice
                 { "userID", pUserID.ToString() },
                 { "scene", pSceneID.ToString() }
             };
+            string key = m_rpcKey.Value;
+            if (key.Length > 0) req["key"] = key;
             return JsonRpcRequest("voice_signaling_request", m_serverURI, req);
         }
 
+        // [HARDENING 2026-10-23] Sent through WolfVoiceHttp, which verifies the voice server's TLS
+        // certificate (OpenSim's shared client does not, by default) and never logs the relay key
+        // (this method used to log the whole request, key included, at :160 and :167). The answer
+        // is the same as before: the "result" map, or {"error": text}.
         public Task<OSDMap> JsonRpcRequest(string method, string uri, OSDMap pParams)
         {
-            string jsonId = UUID.Random().ToString();
-
             if(string.IsNullOrWhiteSpace(uri))
                 return null;
 
-            TaskCompletionSource<OSDMap> tcs = new TaskCompletionSource<OSDMap>();
-            _ = Task.Run(() =>
-            {
-                OSDMap request = new()
-                {
-                    { "jsonrpc", OSD.FromString("2.0") },
-                    { "id", OSD.FromString(jsonId) },
-                    { "method", OSD.FromString(method) },
-                    { "params", pParams }
-                };
-
-                OSDMap outerResponse = null;
-                try
-                {
-                    if (m_MessageDetails) m_log.DebugFormat("{0}: request: {1}", LogHeader, request);
-                    outerResponse = WebUtil.PostToService(uri, request, 10000, true);
-                    if (m_MessageDetails) m_log.DebugFormat("{0}: response: {1}", LogHeader, outerResponse);
-                }
-                catch (Exception e)
-                {
-                    m_log.ErrorFormat("{0}: JsonRpc request '{1}' to {2} failed: {3}", LogHeader, method, uri, e);
-                    m_log.DebugFormat("{0}: request: {1}", LogHeader, request);
-                    tcs.SetResult(new OSDMap()
-                    {
-                        { "error", OSD.FromString(e.Message) }
-                    });
-                }
-
-                OSD osdtmp;
-                if (!outerResponse.TryGetValue("_Result", out osdtmp) || (osdtmp is not OSDMap))
-                {
-                    string errm = String.Format("JsonRpc request '{0}' to {1} returned an invalid response: {2}",
-                        method, uri, OSDParser.SerializeJsonString(outerResponse));
-                    m_log.ErrorFormat(errm);
-                    tcs.SetResult(new OSDMap()
-                    {
-                        { "error", errm }
-                    });
-                }
-
-                OSDMap response = osdtmp as OSDMap;
-                if (response.TryGetValue("error", out osdtmp))
-                {
-                    string errm = String.Format("JsonRpc request '{0}' to {1} returned an error: {2}",
-                        method, uri, OSDParser.SerializeJsonString(osdtmp));
-                    m_log.ErrorFormat(errm);
-                    tcs.SetResult(new OSDMap()
-                    {
-                        { "error", errm }
-                    });
-                }
-
-                OSDMap resultmap = null;
-                if (!response.TryGetValue("result", out osdtmp) || (osdtmp is not OSDMap))
-                {
-                    string errm = String.Format("JsonRpc request '{0}' to {1} returned result as non-OSDMap: {2}",
-                        method, uri, OSDParser.SerializeJsonString(outerResponse));
-                    m_log.ErrorFormat(errm);
-                    tcs.SetResult(new OSDMap()
-                    {
-                        { "error", errm }
-                    });
-                }
-                resultmap = osdtmp as OSDMap;
-
-                tcs.SetResult(resultmap);
-            });
-
-            return tcs.Task;
+            bool details = m_MessageDetails;
+            return Task.Run(() => WolfVoiceHttp.PostJsonRpc(uri, method, pParams, 10000, details));
         }
 
     }

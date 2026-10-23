@@ -18,11 +18,8 @@ using System.Threading.Tasks;
 
 namespace WebRtcVoice
 {
-    /// <summary>
-    /// This is the interface for the voice service. It is used to connect
-    /// the user to the voice server and to handle the capability messages
-    /// from the viewer.
-    /// </summary>
+    // Presents interface for the voice capabilities to connect the user
+    // to the voice server.
     public interface IWebRtcVoiceService
     {
         // The user is requesting a voice connection. The message contains the offer
